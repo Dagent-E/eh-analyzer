@@ -1,7 +1,4 @@
-# eh-analyzer
-Email Header Analyzer, a python3 based tool which helps analyze email headers by two different methods, either by making use of heuristic patterns and/or via ChatGPT integration, the latter allows for a more in-depth analysis with a detailed response and recommended action section. 
-
-# EH Analyzer
+# EH Analyzer by Dagent-E
 
 **EH Analyzer** is a lightweight, single-file e-mail forensics tool designed to give you a quick, color-coded analysis of email headers, attachments, URLs, and optional YARA rule generation. It also includes an optional ChatGPT integration for deeper header analysis when you have an `OPENAI_API_KEY` set.
 
@@ -32,12 +29,42 @@ Email Header Analyzer, a python3 based tool which helps analyze email headers by
 
 ---
 
+## Why EH Analyzer?
+
+EH Analyzer isn’t just another email parser — it’s a forensic powerhouse designed for speed, clarity, and depth:
+
+* **Rapid Insight**: Get a full breakdown of headers, attachments, and URLs in seconds, with color-coded tables that highlight anomalies at a glance.
+* **Unified Workflow**: All your email forensics in one script, no need to juggle multiple tools or learn complex frameworks.
+* **Deep Context with ChatGPT**: With the `--ai` option, EH Analyzer taps into ChatGPT’s expertise to interpret header quirks, suggest likely threat vectors, and recommend next steps — saving you hours of manual analysis.
+* **Customizable & Extensible**: Auto-generate YARA rules, tweak heuristics, or integrate your own AI prompts. EH Analyzer adapts to your investigation style.
+
+Experience the magic of combining traditional header analysis with state-of-the-art language models: it’s like having an expert analyst in your terminal.
+
+## ChatGPT Integration
+
+EH Analyzer’s ChatGPT integration brings AI-driven insights directly into your forensic workflow:
+
+* **Contextual Header Interpretation**: Instead of raw data dumps, you get natural-language explanations of SPF/DKIM/DMARC anomalies, sender reputation cues, and potential misconfigurations.
+* **Threat Vector Suggestions**: ChatGPT analyzes URLs, attachment metadata, and header quirks to propose likely attack methods (e.g., phishing lures, malware delivery paths).
+* **Actionable Recommendations**: Receive prioritized next steps—blocklists to update, investigation tips, and YARA rule enhancements—saving you triage time.
+* **Custom Prompting**: Use the `--ai-prompt` flag to feed custom ChatGPT prompts for tailored analysis or to integrate into higher-level investigation playbooks.
+* **Seamless Workflow**: No separate API calls or manual context-building. Simply add `--ai` (and your API key), and EH Analyzer handles header extraction, context packaging, and result display in your terminal.
+
+Example:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+python eh_analyzer.py message.eml --ai --ai-prompt "Focus on SPF failures and suggest remediation steps."
+```
+
+---
+
 ## Installation
 
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com//eh-analyzer.git
+   git clone https://github.com/<your-username>/eh-analyzer.git
    cd eh-analyzer
    ```
 
@@ -110,6 +137,5 @@ This project is released under the [MIT License](LICENSE).
 
 ## Author
 
-Agent E — 2025
-Lightweight email forensics by Agent E
-
+Dagent-E — 2025
+Lightweight email forensics by Dagent-E
