@@ -73,7 +73,7 @@ python eh_analyzer.py message.eml --ai
 | Option            | Description                                                          |                                                                                 |
 | ----------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `target`          | Path to a single `.eml` file or directory containing `.eml` files.   |                                                                                 |
-| \`--export \[json | plain]\`                                                             | Export a consolidated report as JSON or plain text (in `report_<timestamp>.*`). |
+| `--export \[json | plain]\`                                                              | Export a consolidated report as JSON or plain text (in `report_<timestamp>.*`). |
 | `--yara [FILE]`   | Auto-generate YARA rules to `FILE` (default: `eha_rules.yar`).       |                                                                                 |
 | `--ai`            | Enable ChatGPT forensic header analysis (requires `OPENAI_API_KEY`). |                                                                                 |
 
