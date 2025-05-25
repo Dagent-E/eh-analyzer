@@ -1,0 +1,5 @@
+rich
+pyfiglet
+beautifulsoup4
+tldextract
+openai
