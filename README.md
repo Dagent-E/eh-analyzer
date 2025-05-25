@@ -64,7 +64,7 @@ python eh_analyzer.py message.eml --ai --ai-prompt "Focus on SPF failures and su
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/<your-username>/eh-analyzer.git
+   git clone https://github.com/Dagent-E/eh-analyzer.git
    cd eh-analyzer
    ```
 
@@ -116,6 +116,14 @@ python eh_analyzer.py message.eml --ai
   ```
 
 ---
+
+## Example
+```
+# Basic analysis of a single .eml file
+python3 eh_analyzer.py email3.eml --ai --yara
+```
+![Screenshot 2025-05-25 113701](https://github.com/user-attachments/assets/c417cd0d-f133-4b3e-aa64-818ffe5de8d2)
+![Screenshot 2025-05-25 114307](https://github.com/user-attachments/assets/b7b745d9-c1ed-43e3-b4ef-16276d563bf5)
 
 ## Contributing
 
