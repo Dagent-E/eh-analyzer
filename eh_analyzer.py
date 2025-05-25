@@ -21,7 +21,7 @@ pip install rich pyfiglet beautifulsoup4 tldextract
 
 pip install -r requirements.txt
 
-__version__ = "0.1.1"
+__version__ = "1.0.1"
 
 Author: Dagent-E –  2025
 """
