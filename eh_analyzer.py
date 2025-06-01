@@ -19,8 +19,6 @@ DEPENDENCIES
 ------------
 pip install rich pyfiglet beautifulsoup4 tldextract
 
-pip install -r requirements.txt
-
 __version__ = "1.0.1"
 
 Author: Dagent-E –  2025
@@ -47,7 +45,6 @@ from rich.columns import Columns
 from rich.panel import Panel
 from pyfiglet import Figlet  # type: ignore
 import tldextract  # type: ignore
-
 import time
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -152,6 +149,69 @@ LEAST_DANGEROUS_FILE_EXTENSIONS = {
     # PDF and Other Document Formats
     ".pdf", ".xls", "xlsx", "doc", "docx"
 }
+
+THREAT_FEEDS = {
+    # name          type   url (simple txt, one item per line)               # source
+    "spamhaus_drop": ("ip",    "https://www.spamhaus.org/drop/drop.txt"),    # Spamhaus DROP
+    "abuse_ipblk"  : ("ip",    "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"),
+    "phish_domains": ("domain","https://openphish.com/feed.txt"),
+}
+CACHE_DIR = pathlib.Path(__file__).with_name("threat_feeds")
+CACHE_DIR.mkdir(exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Threat-feed helpers  (top level, NOT inside main)
+# ---------------------------------------------------------------------------
+import urllib.request, ssl, shutil
+
+def refresh_threat_feeds(force: bool = False) -> None:
+    """Download feeds if missing or >24 h old (or always when force=True)."""
+    ssl_ctx = ssl.create_default_context()
+    for name, (_, url) in THREAT_FEEDS.items():
+        dst = CACHE_DIR / f"{name}.txt"
+        if not force and dst.exists() and (
+            datetime.now() - datetime.fromtimestamp(dst.stat().st_mtime)
+        ).total_seconds() < 24 * 3600:
+            continue
+        console.print(f"[cyan]Updating threat-feed {name}…[/cyan]")
+        try:
+            with urllib.request.urlopen(url, context=ssl_ctx, timeout=30) as r, \
+                 dst.open("wb") as fh:
+                shutil.copyfileobj(r, fh)
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/] could not fetch {url}: {e}")
+
+def load_blocklists() -> Dict[str, set]:
+    """Return {'ip': set(...), 'domain': set(...)} for fast look-ups."""
+    ip_set, dom_set = set(), set()
+    for name, (kind, _) in THREAT_FEEDS.items():
+        path = CACHE_DIR / f"{name}.txt"
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.partition(";")[0].strip()
+                if not line:
+                    continue
+                (ip_set if kind == "ip" else dom_set).add(line.lower())
+    return {"ip": ip_set, "domain": dom_set}
+
+def check_blacklists(ip: str | None = None, domain: str | None = None) -> bool:
+    """True if *either* the IP or domain is in the loaded block-lists."""
+    if ip and ip in BLOCKLISTS["ip"]:
+        return True
+    if domain:
+        dom = domain.lower()
+        if dom in BLOCKLISTS["domain"]:
+            return True
+        ext = tldextract.extract(dom)
+        reg = ".".join([ext.domain, ext.suffix]) if ext.suffix else dom
+        if reg in BLOCKLISTS["domain"]:
+            return True
+    return False
+
+refresh_threat_feeds(force=False)          # silent refresh
+BLOCKLISTS = load_blocklists()
 
 #TODO: File Transfer sites like WeTransfer, Dropbox, GoFile and more domains commonly used by attackers.
 
@@ -285,6 +345,59 @@ def extract_urls(msg):
     return sorted(set(str(u).strip("\"'<>") for u in urls))
 
 # ---------------------------------------------------------------------------
+# Extractors – transport chain & X-headers
+# ---------------------------------------------------------------------------
+
+_IP_RE = re.compile(r"\[([0-9a-fA-F:.]+)\]")           # grabs IPv4 or IPv6 in [...]
+_BY_RE   = re.compile(r"\bby\s+([^\s;()]+)", re.I)         # “by smtp-server.example”
+_FROM_RE = re.compile(r"\bfrom\s+([^\s;()]+)", re.I)     # “from mail-host.example”
+_DATE_RE = re.compile(r";\s*(.+)$")                    # trailing date part
+
+def _parse_received(hdr: str) -> Dict[str, str]:
+    """Parse one Received / X-Received header into a small dict."""
+    return {
+        "raw"  : hdr,
+        "from" : (_FROM_RE.search(hdr) or [None, ""])[1],
+        "by"   : (_BY_RE.search(hdr) or [None, ""])[1],
+        "ip"   : (_IP_RE.search(hdr) or [None, ""])[1],
+        "date" : (_DATE_RE.search(hdr) or [None, ""])[1],
+    }
+
+def extract_route_and_xheaders(msg) -> Dict[str, object]:
+    """
+    Return a structure with
+        • received_chain : list of hop-dicts (top → bottom, including X-Received)
+        • spf_summary    : dict {result, domain, ip, raw}
+        • x_headers      : dict of *all* headers that start with 'X-'
+    """
+    # ------------------------------------------------------------------ hops
+    # X-Received first (used by Gmail), then normal Received – preserving order
+    received_hdrs = msg.get_all("X-Received", []) + msg.get_all("Received", [])
+    received_chain = [_parse_received(h) for h in received_hdrs]
+
+    # ---------------------------------------------------------- SPF synopsis
+    spf_hdr = msg.get("Received-SPF", "")
+    spf_summary = {}
+    if spf_hdr:
+        spf_summary = {
+            "raw"    : spf_hdr.strip(),
+            "result" : (re.search(r"^\s*(\w+)", spf_hdr) or ["",""])[1].lower(),
+            "domain" : (re.search(r"domain of ([\w.\-@]+)", spf_hdr) or ["",""])[1],
+            "ip"     : (re.search(r"client-ip[=\s]+([0-9a-fA-F:.]+)", spf_hdr) or ["",""])[1],
+        }
+
+    # ------------------------------------------------------------- X-headers
+    x_headers = {h: v for h, v in msg.items() if h.startswith("X-")}
+
+    return {
+        "received_chain": received_chain,
+        "spf_summary"   : spf_summary,
+        "x_headers"     : x_headers,
+    }
+
+    
+
+# ---------------------------------------------------------------------------
 # Heuristics
 # ---------------------------------------------------------------------------
 
@@ -293,48 +406,166 @@ BASE64_PATTERN = re.compile(
     r'^(?:[A-Za-z0-9+/]{4}){2,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$'
 )
 
-def heuristic_score(auth, urls, attachments):
-    score = 0
+# ─────────────────── GLOBAL WEIGHTS ────────────────────
+WEIGHTS = {
+    "SPF_FAIL"             : 15,
+    "DKIM_FAIL"            : 20,
+    "DMARC_FAIL"           : 20,
+    "ENVELOPE_MISMATCH"    : 10,
+    "BLACKLIST_SENDER"     : 40,
+    "BLACKLIST_HOP_IP"     : 40,
+    "BLACKLIST_HOP_DOMAIN" : 20,
+    "BLACKLIST_URL"        : 35,
+    "DANGEROUS_TLD"        : 10,
+    "URL_BASE64"           : 15,
+    "ATTACH_EXT_HEAVY"     : 20,
+    "ATTACH_EXT_LIGHT"     : 5,
+    "MISSING_MSGID"        : 5,
+    "SUBJECT_KEYWORD"      : 5,   # per keyword, up to a small cap
+    "LIST_UNSUB_MISMATCH"  : 5,
+    "XMAILER_SUSP"         : 5,
+    # … add more weights here as needed …
+}
 
-    for method in ("SPF", "DKIM", "DMARC"):
-        if auth[method]["status"] == "fail" or auth[method]["status"] == "?" or auth[method]["status"] == "softfail":
-            score += 15
+PHISH_KEYWORDS = ["urgent", "verify account", "password", "click here", "bank", "urgente", "verificar", 
+"contraseña", "haz click aqui", "click aqui", "gana", "elegido", "gratis"]
+# -------------------------------------------------------
 
+def heuristic_score(auth: Dict[str,Dict],
+                    urls: List[str],
+                    attachments: List[Dict],
+                    route_info: Dict,
+                    headers: Dict[str,str],
+                    sender_domain: str = None) -> (int, List[str]):
+    running = 0
+    flags = []
+
+    # ─── Reputation: sender‐domain blacklist ───
+    if sender_domain and check_blacklists(domain=sender_domain):
+        running += WEIGHTS["BLACKLIST_SENDER"]
+        flags.append("BLACKLIST_SENDER")
+
+    # ─── Reputation: each hop‐IP / hop‐domain blacklist ───
+    for hop in route_info["received_chain"]:
+        hop_ip = hop.get("ip", "")
+        hop_from = hop.get("from", "")
+        hop_by   = hop.get("by", "")
+
+        if hop_ip and check_blacklists(ip=hop_ip):
+            running += WEIGHTS["BLACKLIST_HOP_IP"]
+            flags.append(f"BLACKLIST_HOP_IP:{hop_ip}")
+
+        if hop_from and check_blacklists(domain=hop_from):
+            running += WEIGHTS["BLACKLIST_HOP_DOMAIN"]
+            flags.append(f"BLACKLIST_HOP_DOMAIN:{hop_from}")
+        if hop_by and check_blacklists(domain=hop_by):
+            running += WEIGHTS["BLACKLIST_HOP_DOMAIN"]
+            flags.append(f"BLACKLIST_HOP_DOMAIN:{hop_by}")
+
+    # ─── SPF / DKIM / DMARC ───
+    spf_stat  = auth["SPF"]["status"].lower()
+    dkim_stat = auth["DKIM"]["status"].lower()
+    dmarc_stat= auth["DMARC"]["status"].lower()
+
+    if spf_stat in ("fail", "softfail", "?"):
+        running += WEIGHTS["SPF_FAIL"]
+        flags.append(f"SPF_{spf_stat.upper()}")
+
+    if dkim_stat == "fail":
+        running += WEIGHTS["DKIM_FAIL"]
+        flags.append("DKIM_FAIL")
+
+    if dmarc_stat in ("fail", "?"):
+        running += WEIGHTS["DMARC_FAIL"]
+        flags.append(f"DMARC_{dmarc_stat.upper()}")
+
+    # ─── Envelope vs Header mismatch ───
+    env = headers.get("Return-Path", "").lower()
+    hdr = headers.get("From", "").lower()
+    if env and hdr and env != hdr:
+        running += WEIGHTS["ENVELOPE_MISMATCH"]
+        flags.append("ENVELOPE_MISMATCH")
+
+    # ─── URLs ───
+    seen_tld_flag = False
     for u in urls:
-        # TLD risk
-        suffix = tldextract.extract(u).suffix
-        if suffix in DANGEROUS_TLDS:
-            score += 10
-
-        #print("The URL is : " + u)
-        anom_urls = ["wa.me", "telegram.me", "t.me", "discord.gg", "chat.whatsapp.com", "snapchat.com", "wechat.com", "wetransfer", "dropbox"]
-        anomalous_sub = any(pattern in u for pattern in anom_urls)
-
-        if anomalous_sub:
-            #print("Social Network and or Anomalous Site Found: " + u)
-            score += 10
- 
-        # Base64‐in‐URL risk
         parsed = urlparse(u)
+        host   = (parsed.hostname or "").lower()
+        tld    = tldextract.extract(host).suffix.lower()
+
+        # URL domain blacklist
+        if host and check_blacklists(domain=host):
+            running += WEIGHTS["BLACKLIST_URL"]
+            flags.append(f"BLACKLIST_URL:{host}")
+
+        # Dangerous TLD (once per message)
+        if tld in DANGEROUS_TLDS and not seen_tld_flag:
+            running += WEIGHTS["DANGEROUS_TLD"]
+            flags.append(f"DANGEROUS_TLD:.{tld}")
+            seen_tld_flag = True
+
+        # Base64 segment in path or query
         parts = parsed.path.split("/") + sum(parse_qs(parsed.query).values(), [])
         for seg in parts:
             token = unquote(seg)
             if BASE64_PATTERN.match(token):
-                score += 30
+                running += WEIGHTS["URL_BASE64"]
+                flags.append("URL_BASE64_SEGMENT")
                 break
 
+    # ─── Attachments ───
     for a in attachments:
-        #if a["mime"] in ("application/x-msdownload", "application/octet-stream") or a["name"].lower().endswith((".exe", ".scr", ".js", ".vbs", ".com")):
-        #    score += 35
+        name = a["name"].lower()
+        for ext in DANGEROUS_FILE_EXTENSIONS:
+            if name.endswith(ext):
+                running += WEIGHTS["ATTACH_EXT_HEAVY"]
+                flags.append(f"ATTACH_EXT_HEAVY:{ext}")
+                break
+        else:
+            for ext in LEAST_DANGEROUS_FILE_EXTENSIONS:
+                if name.endswith(ext):
+                    running += WEIGHTS["ATTACH_EXT_LIGHT"]
+                    flags.append(f"ATTACH_EXT_LIGHT:{ext}")
+                    break
 
-        # After some deep-thinking I decided to remove MIME/TYPES since they can be easily faked and therefore not provide the real filetype. Yes? Makes sense? I guess so...
-        if a["name"].lower().endswith(tuple(DANGEROUS_FILE_EXTENSIONS)):
-            score += 35
+    # ─── Header anomalies ───
+    mid = headers.get("Message-ID", "")
+    if not mid or "@" not in mid:
+        running += WEIGHTS["MISSING_MSGID"]
+        flags.append("MISSING_MSGID")
 
-        if a["name"].lower().endswith(tuple(LEAST_DANGEROUS_FILE_EXTENSIONS)):
-            score += 15
+    xmailer = headers.get("X-Mailer", "").lower()
+    if xmailer and any(bad in xmailer for bad in ["hacktool","vcorders","zbot"]):
+        running += WEIGHTS["XMAILER_SUSP"]
+        flags.append(f"XMAILER_SUSP:{xmailer}")
 
-    return min(score, 100)
+    # ─── List-Unsubscribe mismatch ───
+    unsub = headers.get("List-Unsubscribe", "")
+    if unsub and "mailto" not in unsub:
+        unsub_host = urlparse(unsub.split(",")[0].strip(" <>")).hostname or ""
+        from_host  = urlparse(hdr).hostname or ""
+        if unsub_host and from_host and unsub_host != from_host:
+            running += WEIGHTS["LIST_UNSUB_MISMATCH"]
+            flags.append("LIST_UNSUB_MISMATCH")
+
+    # ─── Subject keywords ───
+    subj = headers.get("Subject", "").lower()
+    keyword_count = 0
+    for kw in PHISH_KEYWORDS:
+        if kw in subj:
+            running += WEIGHTS["SUBJECT_KEYWORD"]
+            flags.append(f"SUBJECT_KEYWORD:{kw}")
+            keyword_count += 1
+            if keyword_count >= 3:  # cap at 3 × 5 = 15
+                break
+
+    # ─── (Optional) HTML vs. Text body checks ───
+    # if you parse out body_html/body_text earlier, add more flags here
+
+    # ─── Final clamp ───
+    final_score = min(running, 100)
+    return final_score, flags
+
 
 # ---------------------------------------------------------------------------
 # YARA autogenerator
@@ -373,11 +604,30 @@ def generate_yara(ruleset: List[Dict], outfile: pathlib.Path):
 # Renderers – Tables
 # ---------------------------------------------------------------------------
 
+def make_domain_link(x: str) -> str:
+    parsed = urlparse("http://" + x)
+    host = parsed.hostname or x
+    ext = tldextract.extract(host)
+    regdom = ".".join([ext.domain, ext.suffix]) if ext.suffix else host
+    if regdom and ext.suffix:
+        vt_link = f"https://www.virustotal.com/gui/domain/{regdom}"
+        us_link = f"https://urlscan.io/search/#domain:{regdom}"
+        # Display the full host ("x"), but make it clickable to both VT & URLScan.
+        return f"[link={vt_link}]{x}[/link] [link={us_link}](scan)[/link]"
+    return x
+
+def make_ip_link(ip: str) -> str:
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
+        vt_ip = f"https://www.virustotal.com/gui/ip-address/{ip}"
+        us_ip = f"https://urlscan.io/search/#ip:{ip}"
+        return f"[link={vt_ip}]{ip}[/link] [link={us_ip}](scan)[/link]"
+    return ip
+
 def _status_style(status: str) -> str:
     mapping = {"pass": "green", "fail": "red", "none": "orange1", "?": "grey50"}
     return mapping.get(status, "grey50")
 
-def render_report(filename, headers, auth, urls, attachments, score):
+def render_report(filename, headers, auth, urls, attachments, score, route_info):
     console.rule(f"[bold cyan]{filename}")
 
     # Headers
@@ -388,6 +638,29 @@ def render_report(filename, headers, auth, urls, attachments, score):
         if v:
             tbl_headers.add_row(k, v)
     console.print(tbl_headers)
+
+    # Received By-From Hops
+    tbl_hops = Table(title="Received chain (top → bottom)")
+    tbl_hops.add_column("#", justify="right")
+    tbl_hops.add_column("From")
+    tbl_hops.add_column("By")
+    tbl_hops.add_column("IP")
+    tbl_hops.add_column("Date", overflow="fold")
+    for i, hop in enumerate(route_info["received_chain"], 1):
+        tbl_hops.add_row(str(i), hop["from"], hop["by"], hop["ip"], hop["date"])
+    console.print(tbl_hops)
+
+    if route_info["spf_summary"]:
+        console.print(f"[bold]Received-SPF:[/bold] {route_info['spf_summary']['raw']}")
+
+    if route_info["x_headers"]:
+        tbl_x = Table(title="X- headers")
+        tbl_x.add_column("Header")
+        tbl_x.add_column("Value", overflow="fold")
+        for k, v in sorted(route_info["x_headers"].items()):
+            tbl_x.add_row(k, v)
+        console.print(tbl_x)
+
 
     # Authentication
     tbl_auth = Table(title="Authentication", show_header=True, show_lines=True)
@@ -411,14 +684,63 @@ def render_report(filename, headers, auth, urls, attachments, score):
             tbl_att.add_row(a["name"], a["mime"], str(a["size"]), a["sha256"])
         console.print(tbl_att)
 
-    # URLs
+    # ── Received By-From Hops (with clickable VT/URLScan links) ─────────────
+    tbl_hops = Table(title="Received chain (top → bottom)")
+    tbl_hops.add_column("#", justify="right")
+    tbl_hops.add_column("From")
+    tbl_hops.add_column("By")
+    tbl_hops.add_column("IP")
+    tbl_hops.add_column("Date", overflow="fold")
+
+    for i, hop in enumerate(route_info["received_chain"], 1):
+        raw_from = hop.get("from") or ""
+        raw_by   = hop.get("by")   or ""
+        raw_ip   = hop.get("ip")   or ""
+        raw_date = hop.get("date") or ""
+
+        # wrap the “from” and “by” domains in clickable links
+        from_linked = make_domain_link(raw_from)
+        by_linked   = make_domain_link(raw_by)
+
+        # wrap the IP in clickable links (if it’s a valid IPv4)
+        ip_linked = make_ip_link(raw_ip)
+
+        tbl_hops.add_row(
+            str(i),
+            from_linked,
+            by_linked,
+            ip_linked,
+            raw_date
+        )
+
+    console.print(tbl_hops)
+
+# ── 3. URLS. Detected URLs (with clickable VT/URLScan links) ───────────────────────
     if urls:
         tbl_url = Table(title="Detected URLs")
-        tbl_url.add_column("URL", overflow="fold")
-        for u in urls:
-            tbl_url.add_row(u)
-        console.print(tbl_url)
+        tbl_url.add_column("Original URL", overflow="fold")
+        tbl_url.add_column("VT / URLScan Link", overflow="fold")
 
+        for u in urls:
+            display_url = u
+            parsed = urlparse(u)
+            host   = (parsed.hostname or "").lower()
+            ext    = tldextract.extract(host)
+            regdom = ".".join([ext.domain, ext.suffix]) if ext.suffix else host
+
+            if regdom and ext.suffix:
+                vt_link = f"https://www.virustotal.com/gui/domain/{regdom}"
+                us_link = f"https://urlscan.io/search/#domain:{regdom}"
+                domain_cell = (
+                    f"[link={vt_link}]{regdom}[/link]\n"
+                    f"[link={us_link}](scan)[/link]"
+                )
+            else:
+                domain_cell = host or "(no host)"
+
+            tbl_url.add_row(display_url, domain_cell)
+
+        console.print(tbl_url)
 
     # ChatGPT-powered header analysis (moved to just before Estimated risk)
 
@@ -432,6 +754,7 @@ def main() -> None:
     parser.add_argument("--export", choices=["json","plain"], help="Export consolidated JSON report")
     parser.add_argument("--yara", metavar="FILE", nargs="?", const="eha_rules.yar", help="Generate YARA rules to FILE (default: eha_rules.yar)")
     parser.add_argument("--ai", action="store_true", help="Enable ChatGPT-powered header analysis in the report")
+    parser.add_argument("--update-feeds", action="store_true", help="Download / refresh block-lists before analysis")
     args = parser.parse_args()
 
     # Banner
@@ -448,11 +771,25 @@ def main() -> None:
     yara_rules_input = []  # Collect data for YARA generation
 
     for fname, msg in messages:
-        headers = extract_headers(msg)
-        auth = extract_auth(msg)
+        headers     = extract_headers(msg)
+        auth        = extract_auth(msg)
         attachments = extract_attachments(msg)
-        urls = extract_urls(msg)
-        score = heuristic_score(auth, urls, attachments)
+        urls        = extract_urls(msg)
+        route_info  = extract_route_and_xheaders(msg)
+
+        # derive sender_domain from Return-Path or From
+        rp = (headers.get("Return-Path", "") or headers.get("From", "")).lower()
+        sender_dom = tldextract.extract(rp).top_domain_under_public_suffix or rp
+
+        # Call the new heuristic_score(...) and unpack (score, fired_flags)
+        score, fired_flags = heuristic_score(
+            auth=auth,
+            urls=urls,
+            attachments=attachments,
+            route_info=route_info,
+            headers=headers,
+            sender_domain=sender_dom
+        )
 
         all_headers = "\n".join(f"{k}: {v}" for k, v in headers.items() if v)
         all_auth    = "\n".join(f"{m}: {info['status']} ({info['info'] or '-'})"
@@ -470,7 +807,7 @@ def main() -> None:
             "URLS:\n"       + all_urls,
         ])
 
-        render_report(fname, headers, auth, urls, attachments, score)
+        render_report(fname, headers, auth, urls, attachments, score, route_info)
 
         export_data.append({                       # unchanged below
             "file": fname,
@@ -500,6 +837,10 @@ def main() -> None:
                 "domains": [tldextract.extract(u).top_domain_under_public_suffix or u for u in urls],
             }
         )
+
+    # Refresh Feeds (Malicious Intelligence)
+    if args.update_feeds:
+        refresh_threat_feeds(force=True)
 
     # JSON export
     if args.export == "json":
@@ -550,8 +891,20 @@ def main() -> None:
         except Exception as e:
             console.print(f"[yellow]Warning:[/] ChatGPT analysis failed: {e}")
 
+    # Show Flags Detected
+    if fired_flags:
+        console.print(
+            Panel(
+                "\n".join(fired_flags),
+                title="⚠ Triggered Suspicious Flags",
+                border_style="red"
+            )
+        )
+
+    # Then show the final risk‐score panel:
     console.print(Panel(f"[bold red]Heuristic Estimated risk:[/] {score}/100"))
     console.print()
+
 
 if __name__ == "__main__":
     main()
