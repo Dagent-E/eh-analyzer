@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Open Issues](https://img.shields.io/github/issues/yourname/eh_analyzer.svg)](https://github.com/yourname/eh_analyzer/issues)
+[![Open Issues](https://img.shields.io/github/issues/Dagent-E/eh_analyzer.svg)](https://github.com/Dagent-E/eh_analyzer/issues)
 
 > **EH Analyzer** (`eh_analyzer.py`) is a *terminal-first* Swiss-army knife for rapid triage of suspicious **`.eml`** messages or entire mailbox folders.
 > It surfaces the most important artefacts, applies a transparent risk-scoring model, and (optionally) calls ChatGPT for a sanity check — all without shipping the raw e-mail anywhere except **your** terminal.
@@ -45,7 +45,7 @@
 
 ```bash
 # Clone or download the repo
-$ git clone https://github.com/yourname/eh_analyzer.git
+$ git clone https://github.com/Dagent-E/eh_analyzer.git
 $ cd eh_analyzer
 
 # Install dependencies (ideally inside a venv)
