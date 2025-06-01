@@ -19,7 +19,7 @@ DEPENDENCIES
 ------------
 pip install rich pyfiglet beautifulsoup4 tldextract
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 Author: Dagent-E –  2025
 """
